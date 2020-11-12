@@ -1711,30 +1711,26 @@ static CURLcode single_transfer(struct GlobalConfig *global,
         if(config->path_as_is)
           my_setopt(curl, CURLOPT_PATH_AS_IS, 1L);
 
-        if(built_in_protos & (CURLPROTO_SCP|CURLPROTO_SFTP)) {
-          if(!config->insecure_ok) {
-            char *home;
-            char *file;
-            result = CURLE_FAILED_INIT;
-            home = homedir(NULL);
-            if(home) {
-              file = aprintf("%s/.ssh/known_hosts", home);
-              if(file) {
-                /* new in curl 7.19.6 */
-                result = res_setopt_str(curl, CURLOPT_SSH_KNOWNHOSTS, file);
-                curl_free(file);
-                if(result == CURLE_UNKNOWN_OPTION)
-                  /* libssh2 version older than 1.1.1 */
-                  result = CURLE_OK;
-              }
-              Curl_safefree(home);
+        if((built_in_protos & (CURLPROTO_SCP|CURLPROTO_SFTP)) &&
+           !config->insecure_ok) {
+          char *home;
+          char *file;
+          result = CURLE_FAILED_INIT;
+          home = homedir(NULL);
+          if(home) {
+            file = aprintf("%s/.ssh/known_hosts", home);
+            if(file) {
+              /* new in curl 7.19.6 */
+              result = res_setopt_str(curl, CURLOPT_SSH_KNOWNHOSTS, file);
+              curl_free(file);
+              if(result == CURLE_UNKNOWN_OPTION)
+                /* libssh2 version older than 1.1.1 */
+                result = CURLE_OK;
             }
-            else {
-              errorf(global, "Failed to figure out user's home dir!");
-            }
-            if(result)
-              break;
+            Curl_safefree(home);
           }
+          else
+            warnf(global, "Failed to figure out user's home dir!");
         }
 
         if(config->no_body || config->remote_time) {
