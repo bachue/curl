@@ -3495,7 +3495,94 @@ CURLcode Curl_http_header(struct Curl_easy *data, struct connectdata *conn,
   return CURLE_OK;
 }
 
+/*
+ * Called after the first HTTP response line (the status line) has been
+ * received and parsed.
+ */
 
+CURLcode Curl_http_statusline(struct Curl_easy *data,
+                              struct connectdata *conn)
+{
+  struct SingleRequest *k = &data->req;
+  data->info.httpcode = k->httpcode;
+
+  data->info.httpversion = conn->httpversion;
+  if(!data->state.httpversion ||
+     data->state.httpversion > conn->httpversion)
+    /* store the lowest server version we encounter */
+    data->state.httpversion = conn->httpversion;
+
+  /*
+   * This code executes as part of processing the header.  As a
+   * result, it's not totally clear how to interpret the
+   * response code yet as that depends on what other headers may
+   * be present.  401 and 407 may be errors, but may be OK
+   * depending on how authentication is working.  Other codes
+   * are definitely errors, so give up here.
+   */
+  if(data->state.resume_from && data->state.httpreq == HTTPREQ_GET &&
+     k->httpcode == 416) {
+    /* "Requested Range Not Satisfiable", just proceed and
+       pretend this is no error */
+    k->ignorebody = TRUE; /* Avoid appending error msg to good data. */
+  }
+  else if(data->set.http_fail_on_error && (k->httpcode >= 400) &&
+          ((k->httpcode != 401) || !conn->bits.user_passwd)
+#ifndef CURL_DISABLE_PROXY
+          && ((k->httpcode != 407) || !conn->bits.proxy_user_passwd)
+#endif
+    ) {
+    /* serious error, go home! */
+    print_http_error(data);
+    return CURLE_HTTP_RETURNED_ERROR;
+  }
+
+  if(conn->httpversion == 10) {
+    /* Default action for HTTP/1.0 must be to close, unless
+       we get one of those fancy headers that tell us the
+       server keeps it open for us! */
+    infof(data, "HTTP 1.0, assume close after body\n");
+    connclose(conn, "HTTP/1.0 close after body");
+  }
+  else if(conn->httpversion == 20 ||
+          (k->upgr101 == UPGR101_REQUESTED && k->httpcode == 101)) {
+    DEBUGF(infof(data, "HTTP/2 found, allow multiplexing\n"));
+    /* HTTP/2 cannot avoid multiplexing since it is a core functionality
+       of the protocol */
+    conn->bundle->multiuse = BUNDLE_MULTIPLEX;
+  }
+  else if(conn->httpversion >= 11 &&
+          !conn->bits.close) {
+    /* If HTTP version is >= 1.1 and connection is persistent */
+    DEBUGF(infof(data,
+                 "HTTP 1.1 or later with persistent connection\n"));
+  }
+
+  k->http_bodyless = k->httpcode >= 100 && k->httpcode < 200;
+  switch(k->httpcode) {
+  case 304:
+    /* (quote from RFC2616, section 10.3.5): The 304 response
+     * MUST NOT contain a message-body, and thus is always
+     * terminated by the first empty line after the header
+     * fields.  */
+    if(data->set.timecondition)
+      data->info.timecond = TRUE;
+    /* FALLTHROUGH */
+  case 204:
+    /* (quote from RFC2616, section 10.2.5): The server has
+     * fulfilled the request but does not need to return an
+     * entity-body ... The 204 response MUST NOT include a
+     * message-body, and thus is always terminated by the first
+     * empty line after the header fields. */
+    k->size = 0;
+    k->maxdownload = 0;
+    k->http_bodyless = TRUE;
+    break;
+  default:
+    break;
+  }
+  return CURLE_OK;
+}
 
 /*
  * Read any HTTP header lines from the server and pass them to the client app.
@@ -4012,83 +4099,9 @@ CURLcode Curl_http_readwrite_headers(struct Curl_easy *data,
       }
 
       if(nc) {
-        data->info.httpcode = k->httpcode;
-
-        data->info.httpversion = conn->httpversion;
-        if(!data->state.httpversion ||
-           data->state.httpversion > conn->httpversion)
-          /* store the lowest server version we encounter */
-          data->state.httpversion = conn->httpversion;
-
-        /*
-         * This code executes as part of processing the header.  As a
-         * result, it's not totally clear how to interpret the
-         * response code yet as that depends on what other headers may
-         * be present.  401 and 407 may be errors, but may be OK
-         * depending on how authentication is working.  Other codes
-         * are definitely errors, so give up here.
-         */
-        if(data->state.resume_from && data->state.httpreq == HTTPREQ_GET &&
-             k->httpcode == 416) {
-          /* "Requested Range Not Satisfiable", just proceed and
-             pretend this is no error */
-          k->ignorebody = TRUE; /* Avoid appending error msg to good data. */
-        }
-        else if(data->set.http_fail_on_error && (k->httpcode >= 400) &&
-                ((k->httpcode != 401) || !conn->bits.user_passwd)
-#ifndef CURL_DISABLE_PROXY
-                && ((k->httpcode != 407) || !conn->bits.proxy_user_passwd)
-#endif
-          ) {
-          /* serious error, go home! */
-          print_http_error(data);
-          return CURLE_HTTP_RETURNED_ERROR;
-        }
-
-        if(conn->httpversion == 10) {
-          /* Default action for HTTP/1.0 must be to close, unless
-             we get one of those fancy headers that tell us the
-             server keeps it open for us! */
-          infof(data, "HTTP 1.0, assume close after body\n");
-          connclose(conn, "HTTP/1.0 close after body");
-        }
-        else if(conn->httpversion == 20 ||
-                (k->upgr101 == UPGR101_REQUESTED && k->httpcode == 101)) {
-          DEBUGF(infof(data, "HTTP/2 found, allow multiplexing\n"));
-          /* HTTP/2 cannot avoid multiplexing since it is a core functionality
-             of the protocol */
-          conn->bundle->multiuse = BUNDLE_MULTIPLEX;
-        }
-        else if(conn->httpversion >= 11 &&
-                !conn->bits.close) {
-          /* If HTTP version is >= 1.1 and connection is persistent */
-          DEBUGF(infof(data,
-                       "HTTP 1.1 or later with persistent connection\n"));
-        }
-
-        k->http_bodyless = k->httpcode >= 100 && k->httpcode < 200;
-        switch(k->httpcode) {
-        case 304:
-          /* (quote from RFC2616, section 10.3.5): The 304 response
-           * MUST NOT contain a message-body, and thus is always
-           * terminated by the first empty line after the header
-           * fields.  */
-          if(data->set.timecondition)
-            data->info.timecond = TRUE;
-          /* FALLTHROUGH */
-        case 204:
-          /* (quote from RFC2616, section 10.2.5): The server has
-           * fulfilled the request but does not need to return an
-           * entity-body ... The 204 response MUST NOT include a
-           * message-body, and thus is always terminated by the first
-           * empty line after the header fields. */
-          k->size = 0;
-          k->maxdownload = 0;
-          k->http_bodyless = TRUE;
-          break;
-        default:
-          break;
-        }
+        result = Curl_http_statusline(data, conn);
+        if(result)
+          return result;
       }
       else {
         k->header = FALSE;   /* this is not a header line */
