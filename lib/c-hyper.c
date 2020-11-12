@@ -123,6 +123,8 @@ static int hyper_each_header(void *userdata,
   struct Curl_easy *data = (struct Curl_easy *)userdata;
   size_t wrote;
   size_t len;
+  char *headp;
+  CURLcode result;
   curl_write_callback writeheader =
     data->set.fwrite_header? data->set.fwrite_header: data->set.fwrite_func;
   Curl_dyn_reset(&data->state.headerb);
@@ -136,15 +138,23 @@ static int hyper_each_header(void *userdata,
       return HYPER_ITER_ERROR;
   }
   len = Curl_dyn_len(&data->state.headerb);
-  Curl_debug(data, CURLINFO_HEADER_IN, Curl_dyn_ptr(&data->state.headerb),
-             len);
+  headp = Curl_dyn_ptr(&data->state.headerb);
+
+  result = Curl_http_header(data, data->conn, headp);
+  if(result) {
+    data->state.hresult = result;
+    return HYPER_ITER_ERROR;
+  }
+
+  Curl_debug(data, CURLINFO_HEADER_IN, headp, len);
 
   Curl_set_in_callback(data, true);
-  wrote = writeheader(Curl_dyn_ptr(&data->state.headerb), 1, len,
-                      data->set.writeheader);
+  wrote = writeheader(headp, 1, len, data->set.writeheader);
   Curl_set_in_callback(data, false);
-  if(wrote != len)
+  if(wrote != len) {
+    data->state.hresult = CURLE_ABORTED_BY_CALLBACK;
     return HYPER_ITER_ERROR;
+  }
 
   data->info.header_size += (long)len;
   data->req.headerbytecount += (long)len;
@@ -237,7 +247,7 @@ static CURLcode hyperstream(struct Curl_easy *data,
   hyper_task *task;
   hyper_task *foreach;
   hyper_error *hypererr = NULL;
-  const uint8_t *reason_phrase;
+  const uint8_t *reasonp;
   size_t reason_len;
   CURLcode result = CURLE_OK;
   (void)conn;
@@ -298,41 +308,52 @@ static CURLcode hyperstream(struct Curl_easy *data,
 
     h->init = TRUE;
     *didwhat = KEEP_RECV;
-    if(!resp)
-      goto error;
+    if(!resp) {
+      failf(data, "hyperstream: couldn't get response\n");
+      return CURLE_RECV_ERROR;
+    }
 
     http_status = hyper_response_status(resp);
     http_version = hyper_response_version(resp);
-    reason_phrase = hyper_response_reason_phrase(resp);
+    reasonp = hyper_response_reason_phrase(resp);
     reason_len = hyper_response_reason_phrase_len(resp);
 
-    if(status_line(data, http_status, http_version, reason_phrase, reason_len))
-      goto error;
+    if(status_line(data, http_status, http_version, reasonp, reason_len)) {
+      failf(data, "hyperstream: couldn't get status code\n");
+      return CURLE_RECV_ERROR;
+    }
 
     headers = hyper_response_headers(resp);
-    if(!headers)
-      goto error;
+    if(!headers) {
+      failf(data, "hyperstream: couldn't get response headers\n");
+      return CURLE_RECV_ERROR;
+    }
 
-    /* the headers seems to already be received? */
+    /* the headers are already received */
     hyper_headers_foreach(headers, hyper_each_header, data);
+    if(data->state.hresult)
+      return data->state.hresult;
 
-    if(empty_header(data))
-      goto error;
+    if(empty_header(data)) {
+      failf(data, "hyperstream: couldn't pass blank header\n");
+      return CURLE_OUT_OF_MEMORY;
+    }
 
     resp_body = hyper_response_body(resp);
-    if(!resp_body)
-      goto error;
+    if(!resp_body) {
+      failf(data, "hyperstream: couldn't get response body\n");
+      return CURLE_RECV_ERROR;
+    }
     foreach = hyper_body_foreach(resp_body, hyper_body_chunk, data);
-    if(!foreach)
-      goto error;
+    if(!foreach) {
+      failf(data, "hyperstream: body foreach failed\n");
+      return CURLE_OUT_OF_MEMORY;
+    }
     hyper_executor_push(h->exec, foreach);
 
     hyper_response_free(resp); /* done with it? */
   } while(1);
   return result;
-  error:
-  failf(data, "hyperstream ERROR\n");
-  return CURLE_OUT_OF_MEMORY;
 }
 
 static CURLcode debug_request(struct Curl_easy *data,

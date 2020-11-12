@@ -1393,6 +1393,9 @@ struct UrlState {
 #endif
   trailers_state trailers_state; /* whether we are sending trailers
                                        and what stage are we at */
+#ifdef USE_HYPER
+  CURLcode hresult; /* used to pass return codes back from hyper callbacks */
+#endif
 
   /* Dynamically allocated strings, MUST be freed before this struct is
      killed. */
