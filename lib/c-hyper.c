@@ -187,6 +187,7 @@ static int hyper_body_chunk(void *userdata, const hyper_buf *chunk)
  * response, to be a header. The libcurl API does. This function sends the
  * status line in the header callback. */
 static CURLcode status_line(struct Curl_easy *data,
+                            struct connectdata *conn,
                             uint16_t http_status,
                             int http_version,
                             const uint8_t *reason, size_t rlen)
@@ -199,6 +200,10 @@ static CURLcode status_line(struct Curl_easy *data,
     data->set.fwrite_header? data->set.fwrite_header: data->set.fwrite_func;
   vstr = http_version == HYPER_HTTP_VERSION_1_1 ? "1.1" :
     (http_version == HYPER_HTTP_VERSION_2 ? "2" : "1.0");
+  conn->httpversion =
+    http_version == HYPER_HTTP_VERSION_1_1 ? 11 :
+    (http_version == HYPER_HTTP_VERSION_2 ? 20 : 10);
+
   Curl_dyn_reset(&data->state.headerb);
 
   result = Curl_dyn_addf(&data->state.headerb, "HTTP/%s %03d %.*s\r\n",
@@ -219,6 +224,7 @@ static CURLcode status_line(struct Curl_easy *data,
 
   data->info.header_size += (long)len;
   data->req.headerbytecount += (long)len;
+  data->req.httpcode = http_status;
   return CURLE_OK;
 }
 
@@ -318,7 +324,8 @@ static CURLcode hyperstream(struct Curl_easy *data,
     reasonp = hyper_response_reason_phrase(resp);
     reason_len = hyper_response_reason_phrase_len(resp);
 
-    if(status_line(data, http_status, http_version, reasonp, reason_len)) {
+    if(status_line(data, conn,
+                   http_status, http_version, reasonp, reason_len)) {
       failf(data, "hyperstream: couldn't get status code\n");
       return CURLE_RECV_ERROR;
     }
