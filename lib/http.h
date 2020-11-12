@@ -79,6 +79,8 @@ void Curl_http_method(struct Curl_easy *data, struct connectdata *conn,
                       const char **method, Curl_HttpReq *);
 CURLcode Curl_http_useragent(struct Curl_easy *data, struct connectdata *conn);
 CURLcode Curl_http_host(struct Curl_easy *data, struct connectdata *conn);
+CURLcode Curl_http_header(struct Curl_easy *data, struct connectdata *conn,
+                          char *headp);
 
 /* protocol-specific functions set up to be called by the main engine */
 CURLcode Curl_http(struct connectdata *conn, bool *done);
