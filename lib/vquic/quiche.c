@@ -25,6 +25,7 @@
 #ifdef USE_QUICHE
 #include <quiche.h>
 #include <openssl/err.h>
+#include <pthread.h>
 #include "urldata.h"
 #include "sendf.h"
 #include "strdup.h"
@@ -172,7 +173,7 @@ static const struct Curl_handler Curl_handler_http3 = {
 static void quiche_debug_log(const char *line, void *argp)
 {
   (void)argp;
-  fprintf(stderr, "%s\n", line);
+  fprintf(stderr, "**** [%ld] %s\n", (unsigned long)pthread_self(), line);
 }
 #endif
 
@@ -401,6 +402,17 @@ static CURLcode process_ingress(struct Curl_easy *data, int sockfd,
     }
   } while(1);
 
+  /* in case the timeout expired */
+  quiche_conn_on_timeout(qs->conn);
+  if (quiche_conn_is_closed(qs->conn)) {
+      fprintf(stderr, "**** [%ld] %s\n", (unsigned long)pthread_self(), "quiche_conn_is_closed(qs->conn) 2");
+      return CURLE_RECV_ERROR;
+  }
+  if (quiche_conn_is_draining(qs->conn)) {
+      fprintf(stderr, "**** [%ld] %s\n", (unsigned long)pthread_self(), "quiche_conn_is_draining(qs->conn) 2");
+      return CURLE_RECV_ERROR;
+  }
+
   return CURLE_OK;
 }
 
@@ -418,8 +430,8 @@ static CURLcode flush_egress(struct Curl_easy *data, int sockfd,
   if(qs->egress_buf != NULL) {
     while(
       (socksent = send(sockfd, qs->egress_buf, qs->egress_buflen, 0)) == -1 &&
-      errno == EINTR)
-      ;
+      errno == EINTR) {
+    }
     if(socksent < 0) {
       if(errno == EAGAIN || errno == EWOULDBLOCK) {
         return CURLE_AGAIN;
@@ -446,8 +458,8 @@ static CURLcode flush_egress(struct Curl_easy *data, int sockfd,
       return CURLE_SEND_ERROR;
     }
 
-    while((socksent = send(sockfd, out, sent, 0)) == -1 && errno == EINTR)
-      ;
+    while((socksent = send(sockfd, out, sent, 0)) == -1 && errno == EINTR) {
+    }
     if(socksent < 0) {
       if(errno == EAGAIN || errno == EWOULDBLOCK) {
         qs->egress_buf = malloc(sent);
@@ -460,6 +472,16 @@ static CURLcode flush_egress(struct Curl_easy *data, int sockfd,
       }
     }
   } while(1);
+
+  quiche_conn_on_timeout(qs->conn);
+  if (quiche_conn_is_closed(qs->conn)) {
+      fprintf(stderr, "**** [%ld] %s\n", (unsigned long)pthread_self(), "quiche_conn_is_closed(qs->conn) 3");
+      return CURLE_SEND_ERROR;
+  }
+  if (quiche_conn_is_draining(qs->conn)) {
+      fprintf(stderr, "**** [%ld] %s\n", (unsigned long)pthread_self(), "quiche_conn_is_draining(qs->conn) 3");
+      return CURLE_SEND_ERROR;
+  }
 
   /* time until the next timeout event, as nanoseconds. */
   timeout_ns = quiche_conn_timeout_as_nanos(qs->conn);
